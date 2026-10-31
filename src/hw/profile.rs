@@ -3,14 +3,14 @@
 
 use std::str::FromStr;
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use super::{Error, Result, Sysfs};
 
 const CPUFREQ: &str = "sys/devices/system/cpu/cpufreq";
 const NO_TURBO: &str = "sys/devices/system/cpu/intel_pstate/no_turbo";
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Profile {
     Ahorro,

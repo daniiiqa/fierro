@@ -1,0 +1,12 @@
+# User unit: reapply saved charge limits and power profile at login.
+#   install -Dm644 dist/fierro-restore.service ~/.config/systemd/user/fierro-restore.service
+#   systemctl --user enable fierro-restore
+[Unit]
+Description=Restore fierro charge limits and power profile
+
+[Service]
+Type=oneshot
+ExecStart=%h/.local/bin/fierro restore
+
+[Install]
+WantedBy=default.target

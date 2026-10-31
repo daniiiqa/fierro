@@ -1,13 +1,17 @@
+mod bar;
+mod tui;
+
+use std::io::IsTerminal;
 use std::process::ExitCode;
 
 use clap::{Parser, Subcommand, ValueEnum};
-use serde::Serialize;
 
+use fierro::config::Config;
 use fierro::hw::battery::Battery;
 use fierro::hw::charge::{self, Preset, Thresholds};
 use fierro::hw::profile::{self, Profile, ProfileState};
-use fierro::hw::thermal::Thermals;
-use fierro::hw::{fnlock, led, Error, Machine, Result, Sysfs};
+use fierro::hw::{fnlock, Error, Result, Sysfs};
+use fierro::status::Status;
 
 #[derive(Parser)]
 #[command(name = "fierro", version, about = "Huawei MateBook hardware, a todo fierro")]
@@ -18,6 +22,8 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Cmd {
+    /// Open the dashboard (the default in a terminal)
+    Tui,
     /// Show everything fierro can see
     Status {
         #[arg(long)]
@@ -31,9 +37,18 @@ enum Cmd {
     /// Show or set fn-lock
     Fnlock { state: Option<Switch> },
     /// Show or set the power profile (ahorro, balance, fierro, next)
-    Profile { name: Option<String> },
+    Profile {
+        name: Option<String>,
+        /// Apply without remembering it for `fierro restore`
+        #[arg(long)]
+        temp: bool,
+    },
     /// One-line battery health report
     Health,
+    /// One line of waybar custom-module JSON
+    Bar,
+    /// Reapply the saved charge limits and profile (run at login)
+    Restore,
 }
 
 #[derive(Clone, Copy, ValueEnum)]
@@ -43,41 +58,11 @@ enum Switch {
     Toggle,
 }
 
-#[derive(Serialize)]
-struct Status {
-    machine: Machine,
-    battery: Option<Battery>,
-    charge: Option<Thresholds>,
-    preset: Option<Preset>,
-    fnlock: Option<bool>,
-    profile: Option<ProfileState>,
-    micmute_led: Option<bool>,
-    cpu_celsius: Option<f64>,
-    thermals: Thermals,
-}
-
-impl Status {
-    fn read(fs: &Sysfs) -> Self {
-        let charge = charge::read(fs).ok();
-        let thermals = Thermals::read(fs);
-        Self {
-            machine: Machine::detect(fs),
-            battery: Battery::read(fs).ok(),
-            preset: charge.and_then(Preset::matching),
-            charge,
-            fnlock: fnlock::read(fs).ok(),
-            profile: profile::read(fs).ok(),
-            micmute_led: led::micmute(fs).ok(),
-            cpu_celsius: thermals.cpu(),
-            thermals,
-        }
-    }
-}
-
 fn main() -> ExitCode {
     let cli = Cli::parse();
     let fs = Sysfs::new();
-    match run(&fs, cli.cmd.unwrap_or(Cmd::Status { json: false })) {
+    let cmd = cli.cmd.unwrap_or(if std::io::stdout().is_terminal() { Cmd::Tui } else { Cmd::Status { json: false } });
+    match run(&fs, cmd) {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
             eprintln!("fierro: {e}");
@@ -88,6 +73,7 @@ fn main() -> ExitCode {
 
 fn run(fs: &Sysfs, cmd: Cmd) -> Result<()> {
     match cmd {
+        Cmd::Tui => tui::run(fs.clone()).map_err(|source| Error::Io { path: "terminal".into(), source })?,
         Cmd::Status { json: true } => {
             println!("{}", serde_json::to_string(&Status::read(fs)).expect("status serializes"));
         }
@@ -101,6 +87,9 @@ fn run(fs: &Sysfs, cmd: Cmd) -> Result<()> {
             };
             if let Some(t) = target {
                 charge::write(fs, t)?;
+                let mut config = Config::load();
+                config.charge = Some(t);
+                config.save()?;
             }
             println!("charge  {}", describe_charge(charge::read(fs)?));
         }
@@ -115,17 +104,28 @@ fn run(fs: &Sysfs, cmd: Cmd) -> Result<()> {
             };
             println!("fn-lock  {}", on_off(on));
         }
-        Cmd::Profile { name } => {
+        Cmd::Profile { name, temp } => {
             if let Some(name) = name {
                 let target = match name.as_str() {
                     "next" => profile::read(fs)?.profile.map_or(Profile::Balance, Profile::next),
                     other => other.parse()?,
                 };
                 profile::apply(fs, target)?;
+                if !temp {
+                    let mut config = Config::load();
+                    config.profile = Some(target);
+                    config.save()?;
+                }
             }
             println!("profile  {}", describe_profile(&profile::read(fs)?));
         }
         Cmd::Health => println!("{}", describe_health(&Battery::read(fs)?)),
+        Cmd::Bar => println!("{}", bar::render(&Status::read(fs), Config::load().spanish())),
+        Cmd::Restore => {
+            for done in Config::load().restore(fs)? {
+                println!("restored {done}");
+            }
+        }
     }
     Ok(())
 }
@@ -142,7 +142,8 @@ fn print_status(s: &Status) {
     }
     if let Some(b) = &s.battery {
         let left = b.minutes_left.map(|m| format!(" · {}h {:02}m left", m / 60, m % 60)).unwrap_or_default();
-        println!("battery  {}% {} · {:.1} W{left}", b.capacity, b.status.to_lowercase(), b.power_w);
+        let state = if s.held { "held at limit".to_string() } else { b.status.to_lowercase() };
+        println!("battery  {}% {state} · {:.1} W{left}", b.capacity, b.power_w);
         println!("health   {}", describe_health(b));
     }
     if let Some(t) = s.charge {
@@ -164,10 +165,9 @@ fn print_status(s: &Status) {
     }
 }
 
-fn describe_charge(t: Thresholds) -> String {
+pub(crate) fn describe_charge(t: Thresholds) -> String {
     match Preset::matching(t) {
         Some(p) => format!("{t} ({})", p.name()),
-        None if !t.is_limited() => format!("{t} (no limit)"),
         None => t.to_string(),
     }
 }

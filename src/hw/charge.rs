@@ -3,12 +3,12 @@
 use std::fmt;
 use std::str::FromStr;
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use super::battery::POWER_SUPPLY;
 use super::{Error, Result, Sysfs, WMI_DIR};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Thresholds {
     pub start: u8,
     pub end: u8,
@@ -37,7 +37,7 @@ impl fmt::Display for Thresholds {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Preset {
     /// Plugged in all day: keep the cells in their happy range.

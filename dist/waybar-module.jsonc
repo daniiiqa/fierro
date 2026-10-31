@@ -1,0 +1,12 @@
+// Add "custom/fierro" to a modules-left/center/right list, and this to the config.
+// Classes for CSS: charging, discharging, not-charging, held, low, critical,
+// and the profile (ahorro, balance, fierro).
+"custom/fierro": {
+    "exec": "fierro bar",
+    "return-type": "json",
+    "interval": 10,
+    "on-click": "kitty --class fierro -e fierro",
+    "on-scroll-up": "fierro profile next && pkill -RTMIN+8 waybar",
+    "on-scroll-down": "fierro profile next && fierro profile next && pkill -RTMIN+8 waybar",
+    "signal": 8
+}

@@ -1,0 +1,255 @@
+//! The dashboard: `fierro` with no arguments in a terminal.
+
+mod theme;
+mod ui;
+
+use std::collections::VecDeque;
+use std::io;
+use std::time::{Duration, Instant};
+
+use ratatui::crossterm::event::{self, Event, KeyCode, KeyEventKind};
+
+use fierro::config::Config;
+use fierro::hw::charge::{self, Preset, Thresholds};
+use fierro::hw::profile::{self, Profile};
+use fierro::hw::{fnlock, Result, Sysfs};
+use fierro::status::Status;
+
+use theme::{Look, Theme};
+
+const HISTORY: usize = 240;
+const STEP: i16 = 5;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Row {
+    Preset,
+    Start,
+    End,
+    Profile,
+    Fnlock,
+}
+
+impl Row {
+    const ALL: [Self; 5] = [Self::Preset, Self::Start, Self::End, Self::Profile, Self::Fnlock];
+
+    fn shift(self, by: isize) -> Self {
+        let i = Self::ALL.iter().position(|&r| r == self).unwrap() as isize;
+        Self::ALL[(i + by).rem_euclid(Self::ALL.len() as isize) as usize]
+    }
+}
+
+pub struct App {
+    fs: Sysfs,
+    config: Config,
+    pub theme: Theme,
+    pub status: Status,
+    pub row: Row,
+    /// Charge limits being edited, applied on enter.
+    pub draft: Option<(u8, u8)>,
+    /// Power draw samples in tenths of a watt, newest last.
+    pub power: VecDeque<u64>,
+    /// Last action's result: (text, is_error).
+    pub message: Option<(String, bool)>,
+    last_read: Instant,
+    quit: bool,
+}
+
+pub fn run(fs: Sysfs) -> io::Result<()> {
+    let mut app = App::new(fs);
+    let mut terminal = ratatui::init();
+    let result = app.event_loop(&mut terminal);
+    ratatui::restore();
+    result
+}
+
+impl App {
+    fn new(fs: Sysfs) -> Self {
+        let status = Status::read(&fs);
+        let mut app = Self {
+            config: Config::load(),
+            theme: Theme::new(Look::load()),
+            status,
+            fs,
+            row: Row::Preset,
+            draft: None,
+            power: VecDeque::with_capacity(HISTORY),
+            message: None,
+            last_read: Instant::now(),
+            quit: false,
+        };
+        app.sample();
+        app
+    }
+
+    pub fn t(&self, es: &'static str, en: &'static str) -> &'static str {
+        if self.config.spanish() { es } else { en }
+    }
+
+    fn event_loop(&mut self, terminal: &mut ratatui::DefaultTerminal) -> io::Result<()> {
+        while !self.quit {
+            terminal.draw(|f| ui::draw(f, self))?;
+            if event::poll(Duration::from_millis(250))?
+                && let Event::Key(k) = event::read()?
+                    && k.kind == KeyEventKind::Press {
+                        self.key(k.code);
+                    }
+            if self.last_read.elapsed() >= Duration::from_secs(1) {
+                self.refresh();
+            }
+        }
+        Ok(())
+    }
+
+    fn refresh(&mut self) {
+        self.status = Status::read(&self.fs);
+        self.last_read = Instant::now();
+        self.sample();
+    }
+
+    fn sample(&mut self) {
+        if let Some(b) = &self.status.battery {
+            if self.power.len() == HISTORY {
+                self.power.pop_front();
+            }
+            self.power.push_back((b.power_w * 10.0).round() as u64);
+        }
+    }
+
+    fn key(&mut self, code: KeyCode) {
+        match code {
+            KeyCode::Char('q') => self.quit = true,
+            KeyCode::Esc if self.draft.is_some() => self.draft = None,
+            KeyCode::Esc => self.quit = true,
+            KeyCode::Up | KeyCode::Char('k') | KeyCode::BackTab => self.row = self.row.shift(-1),
+            KeyCode::Down | KeyCode::Char('j') | KeyCode::Tab => self.row = self.row.shift(1),
+            KeyCode::Left | KeyCode::Char('h') => self.adjust(-1),
+            KeyCode::Right | KeyCode::Char('l') => self.adjust(1),
+            KeyCode::Enter | KeyCode::Char(' ') => self.confirm(),
+            KeyCode::Char('r') => self.refresh(),
+            _ => {}
+        }
+    }
+
+    /// The limits on screen: the draft while editing, else the hardware's.
+    pub fn limits(&self) -> (u8, u8) {
+        self.draft
+            .or(self.status.charge.map(|t| (t.start, t.end)))
+            .unwrap_or((0, 100))
+    }
+
+    fn adjust(&mut self, dir: i16) {
+        let step = |v: u8| (v as i16 + dir * STEP).clamp(0, 100) as u8;
+        match self.row {
+            Row::Preset => {
+                let all = Preset::ALL;
+                let next = match self.status.preset.and_then(|p| all.iter().position(|&q| q == p)) {
+                    Some(i) => all[(i as i16 + dir).rem_euclid(all.len() as i16) as usize],
+                    None if dir > 0 => all[0],
+                    None => all[all.len() - 1],
+                };
+                self.set_charge(next.thresholds());
+            }
+            Row::Start => {
+                let (s, e) = self.limits();
+                self.draft = Some((step(s).min(e - STEP as u8), e));
+            }
+            Row::End => {
+                let (s, e) = self.limits();
+                self.draft = Some((s, step(e).max(s + STEP as u8)));
+            }
+            Row::Profile => {
+                let cur = self.status.profile.as_ref().and_then(|p| p.profile).unwrap_or(Profile::Balance);
+                // three profiles: going back one is going forward two
+                let next = if dir > 0 { cur.next() } else { cur.next().next() };
+                self.set_profile(next);
+            }
+            Row::Fnlock => self.toggle_fnlock(),
+        }
+    }
+
+    fn confirm(&mut self) {
+        match self.row {
+            Row::Start | Row::End => {
+                if let Some((s, e)) = self.draft.take() {
+                    match Thresholds::new(s, e) {
+                        Ok(t) => self.set_charge(t),
+                        Err(e) => self.message = Some((e.to_string(), true)),
+                    }
+                }
+            }
+            Row::Fnlock => self.toggle_fnlock(),
+            _ => {}
+        }
+    }
+
+    fn set_charge(&mut self, t: Thresholds) {
+        self.draft = None;
+        let r = charge::write(&self.fs, t).and_then(|()| {
+            self.config.charge = Some(t);
+            self.config.save()
+        });
+        self.report(r, format!("{} {t}", self.t("carga", "charge")));
+    }
+
+    fn set_profile(&mut self, p: Profile) {
+        let r = profile::apply(&self.fs, p).and_then(|()| {
+            self.config.profile = Some(p);
+            self.config.save()
+        });
+        self.report(r, format!("{} {}", self.t("perfil", "profile"), p.name()));
+    }
+
+    fn toggle_fnlock(&mut self) {
+        let r = fnlock::toggle(&self.fs);
+        let text = match r {
+            Ok(on) => format!("fn-lock {}", if on { "on" } else { "off" }),
+            Err(_) => String::new(),
+        };
+        self.report(r.map(|_| ()), text);
+    }
+
+    fn report(&mut self, r: Result<()>, ok: String) {
+        self.message = Some(match r {
+            Ok(()) => (ok, false),
+            Err(e) => (e.to_string(), true),
+        });
+        self.refresh();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+
+    use super::*;
+
+    /// Renders the live dashboard as text: `cargo test preview -- --ignored --nocapture`
+    /// (FIERRO_LOOK=borders,bar,labels,case,select picks a style).
+    #[test]
+    #[ignore]
+    fn preview() {
+        let mut app = App::new(Sysfs::new());
+        if let Ok(spec) = std::env::var("FIERRO_LOOK") {
+            let v: Vec<String> = spec.split(',').map(String::from).collect();
+            let look = Look {
+                borders: v[0].clone(),
+                bar: v[1].clone(),
+                labels: v[2].clone(),
+                case: v[3].clone(),
+                select: v[4].clone(),
+                ..Look::default()
+            };
+            app.theme = Theme::new(look);
+        }
+        app.row = Row::Start;
+        app.draft = Some((45, 70));
+        let mut terminal = Terminal::new(TestBackend::new(96, 20)).unwrap();
+        terminal.draw(|f| ui::draw(f, &app)).unwrap();
+        let buf = terminal.backend().buffer();
+        for y in 0..buf.area.height {
+            let row: String = (0..buf.area.width).map(|x| buf[(x, y)].symbol()).collect();
+            println!("{}", row.trim_end());
+        }
+    }
+}
