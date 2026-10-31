@@ -1,0 +1,22 @@
+#!/bin/sh
+# Lets members of the `fierro` group write the sysfs files fierro controls,
+# so the tool itself never needs root. Run at boot by fierro-perms.service.
+set -eu
+
+GROUP=fierro
+
+for f in \
+    /sys/devices/platform/huawei-wmi/charge_control_thresholds \
+    /sys/devices/platform/huawei-wmi/fn_lock_state \
+    /sys/class/power_supply/BAT*/charge_control_start_threshold \
+    /sys/class/power_supply/BAT*/charge_control_end_threshold \
+    /sys/class/leds/platform::micmute/brightness \
+    /sys/devices/system/cpu/cpufreq/policy*/scaling_governor \
+    /sys/devices/system/cpu/cpufreq/policy*/energy_performance_preference \
+    /sys/devices/system/cpu/intel_pstate/no_turbo
+do
+    if [ -e "$f" ]; then
+        chgrp "$GROUP" "$f"
+        chmod g+w "$f"
+    fi
+done

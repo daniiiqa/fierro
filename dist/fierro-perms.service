@@ -1,0 +1,11 @@
+[Unit]
+Description=Grant the fierro group access to Huawei laptop controls
+After=systemd-modules-load.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/lib/fierro/fierro-perms
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target
