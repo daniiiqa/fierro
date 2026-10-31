@@ -74,7 +74,9 @@ The dashboard follows the shared TUI style of the discada rice:
 
 borders `auto rounded plain double thick dashed none` · bar `line knob blocks dots ascii` ·
 labels `icons short words` · case `normal upper lower` · select `fill bar inverse` ·
-tint `color phosphor ink`. Colors come from the terminal palette.
+tint `color phosphor ink`. Colors come from the kitty theme that `kitty.conf`
+includes (wallust's), the same way rola reads them. The dashboard restyles itself
+while open when the look, the palette or the theme file changes.
 
 ## Hardware notes
 

@@ -5,7 +5,7 @@ mod ui;
 
 use std::collections::VecDeque;
 use std::io;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
 use ratatui::crossterm::event::{self, Event, KeyCode, KeyEventKind};
 
@@ -51,6 +51,9 @@ pub struct App {
     /// Last action's result: (text, is_error).
     pub message: Option<(String, bool)>,
     last_read: Instant,
+    theme_stamp: Vec<Option<SystemTime>>,
+    restyle_ticks: u8,
+    restyled: bool,
     quit: bool,
 }
 
@@ -75,6 +78,9 @@ impl App {
             power: VecDeque::with_capacity(HISTORY),
             message: None,
             last_read: Instant::now(),
+            theme_stamp: theme::stamp(),
+            restyle_ticks: 0,
+            restyled: false,
             quit: false,
         };
         app.sample();
@@ -87,12 +93,17 @@ impl App {
 
     fn event_loop(&mut self, terminal: &mut ratatui::DefaultTerminal) -> io::Result<()> {
         while !self.quit {
+            if std::mem::take(&mut self.restyled) {
+                // ratatui only redraws changed cells; a new theme changes all of them
+                terminal.clear()?;
+            }
             terminal.draw(|f| ui::draw(f, self))?;
             if event::poll(Duration::from_millis(250))?
                 && let Event::Key(k) = event::read()?
-                    && k.kind == KeyEventKind::Press {
-                        self.key(k.code);
-                    }
+                && k.kind == KeyEventKind::Press
+            {
+                self.key(k.code);
+            }
             if self.last_read.elapsed() >= Duration::from_secs(1) {
                 self.refresh();
             }
@@ -104,6 +115,22 @@ impl App {
         self.status = Status::read(&self.fs);
         self.last_read = Instant::now();
         self.sample();
+        self.follow_look();
+    }
+
+    /// Restyle when a look switch rewrites the style or palette files. Rebuilt on two
+    /// ticks, in case the first read caught a file mid-write.
+    fn follow_look(&mut self) {
+        let stamp = theme::stamp();
+        if stamp != self.theme_stamp {
+            self.theme_stamp = stamp;
+            self.restyle_ticks = 2;
+        }
+        if self.restyle_ticks > 0 {
+            self.restyle_ticks -= 1;
+            self.theme = Theme::new(Look::load());
+            self.restyled = true;
+        }
     }
 
     fn sample(&mut self) {
