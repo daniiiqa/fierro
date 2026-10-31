@@ -10,9 +10,14 @@ for f in \
     /sys/devices/platform/huawei-wmi/fn_lock_state \
     /sys/class/power_supply/BAT*/charge_control_start_threshold \
     /sys/class/power_supply/BAT*/charge_control_end_threshold \
+    /sys/bus/platform/drivers/ideapad_acpi/*/conservation_mode \
+    /sys/bus/platform/drivers/ideapad_acpi/*/fn_lock \
     /sys/class/leds/platform::micmute/brightness \
+    /sys/class/leds/*::kbd_backlight/brightness \
+    /sys/firmware/acpi/platform_profile \
     /sys/devices/system/cpu/cpufreq/policy*/scaling_governor \
     /sys/devices/system/cpu/cpufreq/policy*/energy_performance_preference \
+    /sys/devices/system/cpu/cpufreq/boost \
     /sys/devices/system/cpu/intel_pstate/no_turbo
 do
     if [ -e "$f" ]; then

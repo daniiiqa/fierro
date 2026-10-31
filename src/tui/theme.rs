@@ -254,20 +254,21 @@ impl Theme {
         spans
     }
 
-    /// A 0–100 track with handles at `start` and `end`; `active` (0 or 1) is the one being edited.
-    pub fn slider(&self, start: u8, end: u8, width: u16, active: Option<usize>) -> Vec<Span<'static>> {
+    /// A 0–100 track with handles at `start` (when there is one) and `end`;
+    /// `active` (0 or 1) is the one being edited.
+    pub fn slider(&self, start: Option<u8>, end: u8, width: u16, active: Option<usize>) -> Vec<Span<'static>> {
         let (fill, empty, _) = self.glyphs();
         let handle = if self.look.bar == "ascii" { "|" } else { "●" };
         let w = width.max(2) as usize;
         let pos = |v: u8| (v as usize * (w - 1) + 50) / 100;
-        let (ps, pe) = (pos(start), pos(end));
+        let (ps, pe) = (start.map(pos), pos(end));
         (0..w)
             .map(|i| {
-                let which = if i == ps { Some(0) } else if i == pe { Some(1) } else { None };
+                let which = if Some(i) == ps { Some(0) } else if i == pe { Some(1) } else { None };
                 match which {
                     Some(h) if active == Some(h) => Span::styled(handle, self.acc2.add_modifier(Modifier::BOLD)),
                     Some(_) => Span::styled(handle, self.acc),
-                    None if i > ps && i < pe => Span::styled(fill, self.acc.remove_modifier(Modifier::BOLD)),
+                    None if ps.is_none_or(|p| i > p) && i < pe => Span::styled(fill, self.acc.remove_modifier(Modifier::BOLD)),
                     None => Span::styled(empty, self.dim),
                 }
             })

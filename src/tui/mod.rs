@@ -10,9 +10,9 @@ use std::time::{Duration, Instant, SystemTime};
 use ratatui::crossterm::event::{self, Event, KeyCode, KeyEventKind};
 
 use fierro::config::Config;
-use fierro::hw::charge::{self, Preset, Thresholds};
+use fierro::hw::charge::{self, Kind, Preset, Thresholds};
 use fierro::hw::profile::{self, Profile};
-use fierro::hw::{fnlock, Result, Sysfs};
+use fierro::hw::{fnlock, kbd, Result, Sysfs};
 use fierro::status::Status;
 
 use theme::{Look, Theme};
@@ -27,15 +27,7 @@ pub enum Row {
     End,
     Profile,
     Fnlock,
-}
-
-impl Row {
-    const ALL: [Self; 5] = [Self::Preset, Self::Start, Self::End, Self::Profile, Self::Fnlock];
-
-    fn shift(self, by: isize) -> Self {
-        let i = Self::ALL.iter().position(|&r| r == self).unwrap() as isize;
-        Self::ALL[(i + by).rem_euclid(Self::ALL.len() as isize) as usize]
-    }
+    Kbd,
 }
 
 pub struct App {
@@ -84,7 +76,42 @@ impl App {
             quit: false,
         };
         app.sample();
+        app.row = app.rows().first().copied().unwrap_or(Row::Profile);
         app
+    }
+
+    /// The rows this machine has, top to bottom.
+    pub fn rows(&self) -> Vec<Row> {
+        let s = &self.status;
+        let mut rows = Vec::new();
+        if let Some(kind) = s.charge_kind {
+            rows.push(Row::Preset);
+            if kind == Kind::Range {
+                rows.push(Row::Start);
+            }
+            if kind != Kind::Toggle {
+                rows.push(Row::End);
+            }
+        }
+        if s.profile.is_some() {
+            rows.push(Row::Profile);
+        }
+        if s.fnlock.is_some() {
+            rows.push(Row::Fnlock);
+        }
+        if s.kbd.is_some() {
+            rows.push(Row::Kbd);
+        }
+        rows
+    }
+
+    fn move_row(&mut self, by: isize) {
+        let rows = self.rows();
+        if rows.is_empty() {
+            return;
+        }
+        let i = rows.iter().position(|&r| r == self.row).unwrap_or(0) as isize;
+        self.row = rows[(i + by).rem_euclid(rows.len() as isize) as usize];
     }
 
     pub fn t(&self, es: &'static str, en: &'static str) -> &'static str {
@@ -147,8 +174,8 @@ impl App {
             KeyCode::Char('q') => self.quit = true,
             KeyCode::Esc if self.draft.is_some() => self.draft = None,
             KeyCode::Esc => self.quit = true,
-            KeyCode::Up | KeyCode::Char('k') | KeyCode::BackTab => self.row = self.row.shift(-1),
-            KeyCode::Down | KeyCode::Char('j') | KeyCode::Tab => self.row = self.row.shift(1),
+            KeyCode::Up | KeyCode::Char('k') | KeyCode::BackTab => self.move_row(-1),
+            KeyCode::Down | KeyCode::Char('j') | KeyCode::Tab => self.move_row(1),
             KeyCode::Left | KeyCode::Char('h') => self.adjust(-1),
             KeyCode::Right | KeyCode::Char('l') => self.adjust(1),
             KeyCode::Enter | KeyCode::Char(' ') => self.confirm(),
@@ -168,7 +195,7 @@ impl App {
         let step = |v: u8| (v as i16 + dir * STEP).clamp(0, 100) as u8;
         match self.row {
             Row::Preset => {
-                let all = Preset::ALL;
+                let all = Preset::for_kind(self.status.charge_kind.unwrap_or(Kind::Range));
                 let next = match self.status.preset.and_then(|p| all.iter().position(|&q| q == p)) {
                     Some(i) => all[(i as i16 + dir).rem_euclid(all.len() as i16) as usize],
                     None if dir > 0 => all[0],
@@ -191,6 +218,13 @@ impl App {
                 self.set_profile(next);
             }
             Row::Fnlock => self.toggle_fnlock(),
+            Row::Kbd => {
+                if let Some(k) = &self.status.kbd {
+                    let level = (k.level as i16 + dir).clamp(0, k.max as i16) as u32;
+                    let r = kbd::set(&self.fs, level);
+                    self.report(r, format!("{} {level}/{}", self.t("teclado", "keyboard"), k.max));
+                }
+            }
         }
     }
 
@@ -205,6 +239,11 @@ impl App {
                 }
             }
             Row::Fnlock => self.toggle_fnlock(),
+            Row::Kbd => {
+                let r = kbd::cycle(&self.fs);
+                let text = r.as_ref().map(|l| format!("{} {l}", self.t("teclado", "keyboard"))).unwrap_or_default();
+                self.report(r.map(|_| ()), text);
+            }
             _ => {}
         }
     }
@@ -215,7 +254,8 @@ impl App {
             self.config.charge = Some(t);
             self.config.save()
         });
-        self.report(r, format!("{} {t}", self.t("carga", "charge")));
+        let text = charge::describe(self.status.charge_kind.unwrap_or(Kind::Range), t);
+        self.report(r, format!("{} {text}", self.t("carga", "charge")));
     }
 
     fn set_profile(&mut self, p: Profile) {
@@ -250,6 +290,57 @@ mod tests {
     use ratatui::Terminal;
 
     use super::*;
+    use fierro::testing::machines;
+
+    /// The dashboard for a fake machine, in English with the default look, as text.
+    fn render(files: &[(&str, &str)]) -> (App, String) {
+        let mut app = App::new(fierro::testing::fake(files));
+        app.config.lang = "en".into();
+        app.theme = Theme::new(Look::default());
+        let mut terminal = Terminal::new(TestBackend::new(110, 22)).unwrap();
+        terminal.draw(|f| ui::draw(f, &app)).unwrap();
+        let buf = terminal.backend().buffer();
+        let text = (0..buf.area.height)
+            .map(|y| (0..buf.area.width).map(|x| buf[(x, y)].symbol()).collect::<String>())
+            .collect::<Vec<_>>()
+            .join("\n");
+        println!("{text}");
+        (app, text)
+    }
+
+    #[test]
+    fn thinkpad_dashboard() {
+        let (app, text) = render(&machines::thinkpad());
+        assert_eq!(app.rows(), [Row::Preset, Row::Start, Row::End, Row::Profile, Row::Kbd]);
+        assert!(text.contains("ThinkPad X1 Carbon Gen 11"));
+        assert!(text.contains("from") && text.contains("keyboard") && text.contains("1/2"));
+        assert!(!text.contains("fn-lock"));
+    }
+
+    #[test]
+    fn asus_dashboard_has_one_handle() {
+        let (app, text) = render(&machines::asus());
+        assert_eq!(app.rows(), [Row::Preset, Row::End, Row::Profile, Row::Kbd]);
+        assert!(!text.contains("from") && text.contains(" to "));
+        assert!(text.contains("quiet"));
+    }
+
+    #[test]
+    fn ideapad_dashboard_is_a_switch() {
+        let (mut app, text) = render(&machines::ideapad());
+        assert_eq!(app.rows(), [Row::Preset, Row::Profile, Row::Fnlock]);
+        assert!(text.contains("conservation mode") && !text.contains("oficina"));
+        app.row = Row::Fnlock;
+        app.move_row(1);
+        assert_eq!(app.row, Row::Preset);
+    }
+
+    #[test]
+    fn huawei_dashboard_has_no_keyboard_panel() {
+        let (app, text) = render(&machines::huawei());
+        assert_eq!(app.rows(), [Row::Preset, Row::Start, Row::End, Row::Profile, Row::Fnlock]);
+        assert!(text.contains("fn-lock") && !text.contains("keyboard"));
+    }
 
     /// Renders the live dashboard as text: `cargo test preview -- --ignored --nocapture`
     /// (FIERRO_LOOK=borders,bar,labels,case,select picks a style).

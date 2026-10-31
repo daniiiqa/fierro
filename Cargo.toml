@@ -2,7 +2,7 @@
 name = "fierro"
 version = "0.1.0"
 edition = "2024"
-description = "Huawei MateBook hardware control for Linux, a todo fierro"
+description = "Laptop hardware control for Linux: charge limits, profiles, fn-lock and more, a todo fierro"
 license = "MIT"
 repository = "https://github.com/daniiiqa/fierro"
 

@@ -5,7 +5,6 @@ use serde_json::json;
 use fierro::hw::profile::Profile;
 use fierro::status::Status;
 
-use crate::describe_charge;
 
 const LEVELS: [&str; 10] = ["󰁺", "󰁻", "󰁼", "󰁽", "󰁾", "󰁿", "󰂀", "󰂁", "󰂂", "󰁹"];
 
@@ -59,8 +58,8 @@ pub fn render(s: &Status, es: bool) -> String {
         }
     };
     let mut tooltip = vec![format!("{} {}% · {state}", t("Batería", "Battery"), b.capacity)];
-    if let Some(c) = s.charge {
-        tooltip.push(format!("{}: {}", t("Carga", "Charge"), describe_charge(c)));
+    if let Some(c) = s.describe_charge() {
+        tooltip.push(format!("{}: {c}", t("Carga", "Charge")));
     }
     tooltip.push(format!("{}: {:.1}%", t("Salud", "Health"), b.health_pct));
     tooltip.push(format!("{}: {}", t("Perfil", "Profile"), profile.map_or("custom", Profile::name)));

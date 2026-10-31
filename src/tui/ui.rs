@@ -3,7 +3,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Paragraph, Sparkline};
 use ratatui::Frame;
 
-use fierro::hw::charge::Preset;
+use fierro::hw::charge::{Kind, Preset};
 use fierro::hw::profile::Profile;
 
 use super::{App, Row};
@@ -14,10 +14,11 @@ pub fn draw(f: &mut Frame, app: &App) {
         f.render_widget(Block::new().style(bg), f.area());
     }
     let area = f.area().inner(Margin { horizontal: 1, vertical: 0 });
+    let charge_rows = if app.status.charge_kind.is_some() { 5 } else { 0 };
     let [header, battery, charge, bottom, footer] = Layout::vertical([
         Constraint::Length(1),
         Constraint::Min(7),
-        Constraint::Length(5),
+        Constraint::Length(charge_rows),
         Constraint::Length(5),
         Constraint::Length(1),
     ])
@@ -25,12 +26,26 @@ pub fn draw(f: &mut Frame, app: &App) {
 
     draw_header(f, app, header);
     draw_battery(f, app, battery);
-    draw_charge(f, app, charge);
-    let [profile, fnlock, thermal] =
-        Layout::horizontal([Constraint::Fill(3), Constraint::Fill(2), Constraint::Fill(3)]).areas(bottom);
-    draw_profile(f, app, profile);
-    draw_fnlock(f, app, fnlock);
-    draw_thermal(f, app, thermal);
+    if charge_rows > 0 {
+        draw_charge(f, app, charge);
+    }
+    // Only the panels this machine has, sharing the row by weight.
+    type Draw = fn(&mut Frame, &App, Rect);
+    let mut panels: Vec<(u16, Draw)> = Vec::new();
+    if app.status.profile.is_some() {
+        panels.push((3, draw_profile));
+    }
+    if app.status.fnlock.is_some() {
+        panels.push((2, draw_fnlock));
+    }
+    if app.status.kbd.is_some() {
+        panels.push((2, draw_kbd));
+    }
+    panels.push((3, draw_thermal));
+    let areas = Layout::horizontal(panels.iter().map(|(w, _)| Constraint::Fill(*w))).split(bottom);
+    for ((_, draw), area) in panels.iter().zip(areas.iter()) {
+        draw(f, app, *area);
+    }
     draw_footer(f, app, footer);
 }
 
@@ -39,7 +54,7 @@ fn draw_header(f: &mut Frame, app: &App, area: Rect) {
     let m = &app.status.machine;
     let line = Line::from(vec![
         Span::styled(th.case(" fierro "), th.acc),
-        Span::styled(format!(" {} {} · BIOS {}", m.vendor, m.product, m.bios), th.dim),
+        Span::styled(format!(" {}", m.title()), th.dim),
     ]);
     f.render_widget(Paragraph::new(line), area);
 }
@@ -113,10 +128,11 @@ fn draw_charge(f: &mut Frame, app: &App, area: Rect) {
     let inner = block.inner(area);
     f.render_widget(block, area);
     let [presets, slider, values] = Layout::vertical([Constraint::Length(1); 3]).areas(inner);
+    let kind = app.status.charge_kind.unwrap_or(Kind::Range);
 
     let current = if app.draft.is_some() { None } else { app.status.preset };
     let mut line = Vec::new();
-    for p in Preset::ALL {
+    for &p in Preset::for_kind(kind) {
         line.extend(th.choice(p.name(), current == Some(p), app.row == Row::Preset));
     }
     if current.is_none() {
@@ -124,20 +140,32 @@ fn draw_charge(f: &mut Frame, app: &App, area: Rect) {
     }
     f.render_widget(Paragraph::new(Line::from(line)), presets);
 
+    if kind == Kind::Toggle {
+        let note = app.t(
+            "modo conservación: el firmware la detiene entre 55 y 80%",
+            "conservation mode: the firmware stops charging around 55–80%",
+        );
+        f.render_widget(Paragraph::new(Span::styled(th.case(&format!("  {note}")), th.dim)), slider);
+        return;
+    }
+
     let (s, e) = app.limits();
+    let start = (kind == Kind::Range).then_some(s);
     let active = match app.row {
         Row::Start => Some(0),
         Row::End => Some(1),
         _ => None,
     };
     let mut line = vec![Span::styled("  0 ", th.dim)];
-    line.extend(th.slider(s, e, inner.width.saturating_sub(10), active));
+    line.extend(th.slider(start, e, inner.width.saturating_sub(10), active));
     line.push(Span::styled(" 100", th.dim));
     f.render_widget(Paragraph::new(Line::from(line)), slider);
 
     let mut line = Vec::new();
-    line.push(Span::styled(format!("  {} ", th.case(app.t("desde", "from"))), th.dim));
-    line.extend(th.choice(&format!("{s}%"), true, app.row == Row::Start));
+    if kind == Kind::Range {
+        line.push(Span::styled(format!("  {} ", th.case(app.t("desde", "from"))), th.dim));
+        line.extend(th.choice(&format!("{s}%"), true, app.row == Row::Start));
+    }
     line.push(Span::styled(format!("  {} ", th.case(app.t("hasta", "to"))), th.dim));
     line.extend(th.choice(&format!("{e}%"), true, app.row == Row::End));
     if app.draft.is_some() {
@@ -164,7 +192,8 @@ fn draw_profile(f: &mut Frame, app: &App, area: Rect) {
         Some(true) => " · turbo",
         _ => "",
     };
-    let detail = format!(" {}{turbo}", state.epp.as_deref().unwrap_or(&state.governor));
+    let level = [&state.platform, &state.epp, &state.governor].into_iter().flatten().next().map_or("-", String::as_str);
+    let detail = format!(" {level}{turbo}");
     let lines = vec![Line::from(line), Line::from(Span::styled(detail, th.dim))];
     f.render_widget(Paragraph::new(lines), inner);
 }
@@ -183,6 +212,21 @@ fn draw_fnlock(f: &mut Frame, app: &App, area: Rect) {
     line.extend(th.choice("on", on, focused));
     let keys = if on { "F1–F12" } else { app.t("multimedia", "media keys") };
     let hint = Span::styled(th.case(&format!(" {keys} · {}", app.t("espacio", "space"))), th.dim);
+    f.render_widget(Paragraph::new(vec![Line::from(line), Line::from(hint)]), inner);
+}
+
+fn draw_kbd(f: &mut Frame, app: &App, area: Rect) {
+    let th = &app.theme;
+    let focused = app.row == Row::Kbd;
+    let block = th.block(th.label("󰥻", "kbd", app.t("teclado", "keyboard")), focused);
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+    let Some(k) = &app.status.kbd else { return };
+    let style = if focused { th.acc } else { th.current };
+    let mut line = vec![Span::raw(" ")];
+    line.extend(th.bar(k.level as f64 / k.max.max(1) as f64, inner.width.saturating_sub(8).min(12), style));
+    line.push(Span::styled(format!(" {}/{}", k.level, k.max), th.fg));
+    let hint = Span::styled(th.case(&format!(" ←→ · {}", app.t("espacio", "space"))), th.dim);
     f.render_widget(Paragraph::new(vec![Line::from(line), Line::from(hint)]), inner);
 }
 

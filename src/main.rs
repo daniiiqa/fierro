@@ -10,7 +10,8 @@ use fierro::config::Config;
 use fierro::hw::battery::Battery;
 use fierro::hw::charge::{self, Preset, Thresholds};
 use fierro::hw::profile::{self, Profile, ProfileState};
-use fierro::hw::{fnlock, Error, Result, Sysfs};
+use fierro::hw::{fnlock, kbd, Error, Result, Sysfs};
+use fierro::report;
 use fierro::status::Status;
 
 #[derive(Parser)]
@@ -43,12 +44,16 @@ enum Cmd {
         #[arg(long)]
         temp: bool,
     },
+    /// Show or set the keyboard backlight: a level, or `next`
+    Kbd { level: Option<String> },
     /// One-line battery health report
     Health,
     /// One line of waybar custom-module JSON
     Bar,
     /// Reapply the saved charge limits and profile (run at login)
     Restore,
+    /// What this laptop exposes, as JSON to paste into a bug report
+    Report,
 }
 
 #[derive(Clone, Copy, ValueEnum)]
@@ -91,7 +96,8 @@ fn run(fs: &Sysfs, cmd: Cmd) -> Result<()> {
                 config.charge = Some(t);
                 config.save()?;
             }
-            println!("charge  {}", describe_charge(charge::read(fs)?));
+            let status = Status::read(fs);
+            println!("charge  {}", status.describe_charge().ok_or(Error::Unsupported("charge limits"))?);
         }
         Cmd::Fnlock { state } => {
             let on = match state {
@@ -119,6 +125,17 @@ fn run(fs: &Sysfs, cmd: Cmd) -> Result<()> {
             }
             println!("profile  {}", describe_profile(&profile::read(fs)?));
         }
+        Cmd::Kbd { level } => {
+            match level.as_deref() {
+                None => {}
+                Some("next") => {
+                    kbd::cycle(fs)?;
+                }
+                Some(n) => kbd::set(fs, n.parse().map_err(|_| Error::Invalid(format!("not a level: {n:?}")))?)?,
+            }
+            let k = kbd::read(fs)?;
+            println!("kbd  {}/{}", k.level, k.max);
+        }
         Cmd::Health => println!("{}", describe_health(&Battery::read(fs)?)),
         Cmd::Bar => println!("{}", bar::render(&Status::read(fs), Config::load().spanish())),
         Cmd::Restore => {
@@ -126,6 +143,7 @@ fn run(fs: &Sysfs, cmd: Cmd) -> Result<()> {
                 println!("restored {done}");
             }
         }
+        Cmd::Report => println!("{}", serde_json::to_string_pretty(&report::report(fs)).expect("report serializes")),
     }
     Ok(())
 }
@@ -136,8 +154,8 @@ fn percent(s: &str) -> Result<u8> {
 
 fn print_status(s: &Status) {
     let m = &s.machine;
-    println!("{} {} ({}) · BIOS {}", m.vendor, m.product, m.version, m.bios);
-    if !m.huawei_wmi {
+    println!("{}", m.title());
+    if m.vendor.eq_ignore_ascii_case("huawei") && !m.huawei_wmi {
         println!("warning  huawei-wmi not loaded — try `sudo modprobe huawei-wmi`");
     }
     if let Some(b) = &s.battery {
@@ -146,14 +164,17 @@ fn print_status(s: &Status) {
         println!("battery  {}% {state} · {:.1} W{left}", b.capacity, b.power_w);
         println!("health   {}", describe_health(b));
     }
-    if let Some(t) = s.charge {
-        println!("charge   {}", describe_charge(t));
+    if let Some(charge) = s.describe_charge() {
+        println!("charge   {charge}");
     }
     if let Some(on) = s.fnlock {
         println!("fn-lock  {}", describe_fnlock(on));
     }
     if let Some(p) = &s.profile {
         println!("profile  {}", describe_profile(p));
+    }
+    if let Some(k) = &s.kbd {
+        println!("kbd      {}/{}", k.level, k.max);
     }
     let mut thermal = Vec::new();
     if let Some(c) = s.cpu_celsius {
@@ -165,22 +186,15 @@ fn print_status(s: &Status) {
     }
 }
 
-pub(crate) fn describe_charge(t: Thresholds) -> String {
-    match Preset::matching(t) {
-        Some(p) => format!("{t} ({})", p.name()),
-        None => t.to_string(),
-    }
-}
-
 fn describe_profile(p: &ProfileState) -> String {
     let name = p.profile.map_or("custom", Profile::name);
-    let epp = p.epp.as_deref().unwrap_or("-");
-    let turbo = match p.turbo {
-        Some(true) => ", turbo on",
-        Some(false) => ", turbo off",
-        None => "",
-    };
-    format!("{name} ({} / {epp}{turbo})", p.governor)
+    let mut parts: Vec<&str> = [&p.platform, &p.governor, &p.epp].into_iter().flatten().map(String::as_str).collect();
+    match p.turbo {
+        Some(true) => parts.push("turbo on"),
+        Some(false) => parts.push("turbo off"),
+        None => {}
+    }
+    format!("{name} ({})", parts.join(" / "))
 }
 
 fn describe_health(b: &Battery) -> String {

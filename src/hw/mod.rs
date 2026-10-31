@@ -3,6 +3,7 @@
 pub mod battery;
 pub mod charge;
 pub mod fnlock;
+pub mod kbd;
 pub mod led;
 pub mod profile;
 pub mod thermal;
@@ -15,6 +16,16 @@ use std::str::FromStr;
 use serde::Serialize;
 
 pub(crate) const WMI_DIR: &str = "sys/devices/platform/huawei-wmi";
+pub(crate) const IDEAPAD_DRIVER: &str = "sys/bus/platform/drivers/ideapad_acpi";
+
+/// The ideapad_laptop device (`VPC2004:00`) that carries conservation_mode and fn_lock.
+pub(crate) fn ideapad_dir(fs: &Sysfs) -> Option<String> {
+    fs.list(IDEAPAD_DRIVER, "")
+        .into_iter()
+        .filter(|n| n.contains(':'))
+        .map(|n| format!("{IDEAPAD_DRIVER}/{n}"))
+        .next()
+}
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -130,6 +141,22 @@ pub struct Machine {
 }
 
 impl Machine {
+    /// The name people know the laptop by. Lenovo keeps it in product_version
+    /// ("ThinkPad X1 Carbon Gen 11") and a part number in product_name.
+    pub fn model(&self) -> &str {
+        if self.vendor.eq_ignore_ascii_case("lenovo") && !self.version.is_empty() {
+            &self.version
+        } else {
+            &self.product
+        }
+    }
+
+    /// "HUAWEI MDF-XX · BIOS 1.27", without the BIOS part when it is unknown.
+    pub fn title(&self) -> String {
+        let bios = if self.bios.is_empty() { String::new() } else { format!(" · BIOS {}", self.bios) };
+        format!("{} {}{bios}", self.vendor, self.model())
+    }
+
     pub fn detect(fs: &Sysfs) -> Self {
         let dmi = |f: &str| fs.read_opt(&format!("sys/class/dmi/id/{f}")).unwrap_or_default();
         Self {
@@ -143,23 +170,7 @@ impl Machine {
 }
 
 #[cfg(test)]
-pub(crate) fn fake(files: &[(&str, &str)]) -> Sysfs {
-    use std::sync::atomic::{AtomicUsize, Ordering};
-    static N: AtomicUsize = AtomicUsize::new(0);
-
-    let root = std::env::temp_dir().join(format!(
-        "fierro-test-{}-{}",
-        std::process::id(),
-        N.fetch_add(1, Ordering::Relaxed)
-    ));
-    let _ = fs::remove_dir_all(&root);
-    for (rel, value) in files {
-        let path = root.join(rel);
-        fs::create_dir_all(path.parent().unwrap()).unwrap();
-        fs::write(path, value).unwrap();
-    }
-    Sysfs::at(root)
-}
+pub(crate) use crate::testing::fake;
 
 #[cfg(test)]
 mod tests {
