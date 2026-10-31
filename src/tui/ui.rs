@@ -181,7 +181,8 @@ fn draw_fnlock(f: &mut Frame, app: &App, area: Rect) {
     };
     let mut line = th.choice("off", !on, focused);
     line.extend(th.choice("on", on, focused));
-    let hint = Span::styled(th.case(&format!(" {}", app.t("espacio cambia", "space toggles"))), th.dim);
+    let keys = if on { "F1–F12" } else { app.t("multimedia", "media keys") };
+    let hint = Span::styled(th.case(&format!(" {keys} · {}", app.t("espacio", "space"))), th.dim);
     f.render_widget(Paragraph::new(vec![Line::from(line), Line::from(hint)]), inner);
 }
 

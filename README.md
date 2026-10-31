@@ -9,7 +9,7 @@ HUAWEI MDF-XX (M1010) · BIOS 1.27
 battery  43% held at limit · 11.1 W
 health   92.4% (51.0 / 55.2 Wh) · 130 cycles
 charge   40–70% (casa)
-fn-lock  off
+fn-lock  off (media keys)
 profile  balance (powersave / balance_performance, turbo on)
 thermal  cpu 42°C · fan 2100 rpm
 ```
@@ -23,7 +23,7 @@ a power graph, the Smart Charge slider, profiles, fn-lock and temperatures.
 |---|---|
 | **Smart Charge** | Charge limits through `huawei-wmi`, with presets: `casa` 40–70 (plugged in all day), `oficina` 70–90, `viaje` 100 |
 | **Profiles** | `ahorro` / `balance` / `fierro`: cpufreq governor + Intel EPP + turbo on every core |
-| **Fn-lock** | read, set, toggle |
+| **Fn-lock** | on: F1–F12 work without Fn · off: media keys |
 | **Battery health** | wear %, cycles, live power draw, time left |
 | **Thermals** | every hwmon sensor and fan |
 | **Restore** | `fierro restore` reapplies your last limits and profile at login |

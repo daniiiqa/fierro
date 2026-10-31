@@ -34,7 +34,7 @@ enum Cmd {
         #[arg(num_args = 0..=2)]
         args: Vec<String>,
     },
-    /// Show or set fn-lock
+    /// Show or set fn-lock (on: F1–F12, off: media keys)
     Fnlock { state: Option<Switch> },
     /// Show or set the power profile (ahorro, balance, fierro, next)
     Profile {
@@ -102,7 +102,7 @@ fn run(fs: &Sysfs, cmd: Cmd) -> Result<()> {
                     fnlock::read(fs)?
                 }
             };
-            println!("fn-lock  {}", on_off(on));
+            println!("fn-lock  {}", describe_fnlock(on));
         }
         Cmd::Profile { name, temp } => {
             if let Some(name) = name {
@@ -150,7 +150,7 @@ fn print_status(s: &Status) {
         println!("charge   {}", describe_charge(t));
     }
     if let Some(on) = s.fnlock {
-        println!("fn-lock  {}", on_off(on));
+        println!("fn-lock  {}", describe_fnlock(on));
     }
     if let Some(p) = &s.profile {
         println!("profile  {}", describe_profile(p));
@@ -188,6 +188,6 @@ fn describe_health(b: &Battery) -> String {
     format!("{:.1}% ({:.1} / {:.1} Wh){cycles}", b.health_pct, b.energy_full_wh, b.energy_design_wh)
 }
 
-fn on_off(on: bool) -> &'static str {
-    if on { "on" } else { "off" }
+fn describe_fnlock(on: bool) -> &'static str {
+    if on { "on (F1–F12)" } else { "off (media keys)" }
 }
