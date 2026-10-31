@@ -67,6 +67,10 @@ impl Preset {
     }
 
     pub fn matching(t: Thresholds) -> Option<Self> {
+        // Huawei firmware stores "0 100" as "95 100": any 100% end is viaje.
+        if !t.is_limited() {
+            return Some(Self::Viaje);
+        }
         Self::ALL.into_iter().find(|p| p.thresholds() == t)
     }
 }
@@ -155,6 +159,12 @@ mod tests {
         assert_eq!(read(&fs).unwrap(), Thresholds { start: 95, end: 100 });
         write(&fs, Preset::Casa.thresholds()).unwrap();
         assert_eq!(Preset::matching(read(&fs).unwrap()), Some(Preset::Casa));
+    }
+
+    #[test]
+    fn firmware_full_is_viaje() {
+        assert_eq!(Preset::matching(Thresholds { start: 95, end: 100 }), Some(Preset::Viaje));
+        assert_eq!(Preset::matching(Thresholds { start: 50, end: 80 }), None);
     }
 
     #[test]
