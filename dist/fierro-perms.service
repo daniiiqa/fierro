@@ -1,5 +1,5 @@
 [Unit]
-Description=Grant the fierro group access to Huawei laptop controls
+Description=Let the fierro group write the laptop controls fierro uses
 After=systemd-modules-load.service
 
 [Service]
