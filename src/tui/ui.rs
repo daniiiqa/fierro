@@ -41,6 +41,9 @@ pub fn draw(f: &mut Frame, app: &App) {
     if app.status.kbd.is_some() {
         panels.push((2, draw_kbd));
     }
+    if app.huella.is_some() {
+        panels.push((2, draw_huella));
+    }
     panels.push((3, draw_thermal));
     let areas = Layout::horizontal(panels.iter().map(|(w, _)| Constraint::Fill(*w))).split(bottom);
     for ((_, draw), area) in panels.iter().zip(areas.iter()) {
@@ -270,4 +273,46 @@ fn draw_footer(f: &mut Frame, app: &App, area: Rect) {
         )),
     };
     f.render_widget(Paragraph::new(line), area);
+}
+
+/// Read-only: the fingers fprintd has and the logins that take one (`fierro huella` changes them).
+fn draw_huella(f: &mut Frame, app: &App, area: Rect) {
+    let th = &app.theme;
+    let block = th.block(th.label("󰈷", "fp", app.t("huella", "fingerprint")), false);
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+    let Some((enrolled, pam)) = &app.huella else { return };
+    let mut lines = Vec::new();
+    if let Some(url) = app.status.fingerprint.as_ref().and_then(|r| r.missing_driver) {
+        lines.push(Line::from(Span::styled(th.case(app.t(" falta el driver", " needs a driver")), th.warn)));
+        lines.push(Line::from(Span::styled(format!(" {}", url.trim_start_matches("https://")), th.dim)));
+    } else if enrolled.fingers.is_empty() {
+        lines.push(Line::from(Span::styled(th.case(app.t(" sin dedos", " no fingers")), th.warn)));
+        lines.push(Line::from(Span::styled(th.case(app.t(" fierro huella registrar", " fierro huella enroll")), th.dim)));
+    } else {
+        // "right-index-finger" → "index", "left-thumb" → "thumb ←"
+        let names: Vec<String> = enrolled
+            .fingers
+            .iter()
+            .map(|f| {
+                let short = f.trim_end_matches("-finger").split('-').next_back().unwrap_or(f);
+                if f.starts_with("left") { format!("{short}←") } else { short.to_string() }
+            })
+            .collect();
+        lines.push(Line::from(vec![
+            Span::styled(format!(" {} ", enrolled.fingers.len()), th.acc),
+            Span::styled(names.join(" "), th.fg),
+        ]));
+        // two logins a line: three fit in the panel's three rows without cutting
+        for pair in pam.chunks(2) {
+            let mut line = vec![Span::raw(" ")];
+            for s in pair {
+                let name = s.name.trim_end_matches("-1");
+                line.push(Span::styled(format!("{name} "), th.dim));
+                line.push(if s.on { Span::styled("✓ ", th.acc) } else { Span::styled("· ", th.dim) });
+            }
+            lines.push(Line::from(line));
+        }
+    }
+    f.render_widget(Paragraph::new(lines), inner);
 }

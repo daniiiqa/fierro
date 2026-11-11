@@ -12,6 +12,7 @@ use ratatui::crossterm::event::{self, Event, KeyCode, KeyEventKind};
 use fierro::config::Config;
 use fierro::hw::charge::{self, Kind, Preset, Thresholds};
 use fierro::hw::profile::{self, Profile};
+use fierro::hw::fingerprint::{self, Enrolled, PamService};
 use fierro::hw::{fnlock, kbd, Result, Sysfs};
 use fierro::status::Status;
 
@@ -42,6 +43,8 @@ pub struct App {
     pub power: VecDeque<u64>,
     /// Last action's result: (text, is_error).
     pub message: Option<(String, bool)>,
+    /// fprintd's view and the logins that take a finger; read at start and on `r`, not every tick.
+    pub huella: Option<(Enrolled, Vec<PamService>)>,
     last_read: Instant,
     theme_stamp: Vec<Option<SystemTime>>,
     restyle_ticks: u8,
@@ -69,12 +72,14 @@ impl App {
             draft: None,
             power: VecDeque::with_capacity(HISTORY),
             message: None,
+            huella: None,
             last_read: Instant::now(),
             theme_stamp: theme::stamp(),
             restyle_ticks: 0,
             restyled: false,
             quit: false,
         };
+        app.read_huella();
         app.sample();
         app.row = app.rows().first().copied().unwrap_or(Row::Profile);
         app
@@ -160,6 +165,13 @@ impl App {
         }
     }
 
+    fn read_huella(&mut self) {
+        self.huella = self.status.fingerprint.as_ref().map(|_| {
+            let user = std::env::var("USER").unwrap_or_default();
+            (fingerprint::enrolled(&user).unwrap_or_default(), fingerprint::pam(&self.fs))
+        });
+    }
+
     fn sample(&mut self) {
         if let Some(b) = &self.status.battery {
             if self.power.len() == HISTORY {
@@ -179,7 +191,10 @@ impl App {
             KeyCode::Left | KeyCode::Char('h') => self.adjust(-1),
             KeyCode::Right | KeyCode::Char('l') => self.adjust(1),
             KeyCode::Enter | KeyCode::Char(' ') => self.confirm(),
-            KeyCode::Char('r') => self.refresh(),
+            KeyCode::Char('r') => {
+                self.refresh();
+                self.read_huella();
+            }
             _ => {}
         }
     }
@@ -340,6 +355,23 @@ mod tests {
         let (app, text) = render(&machines::huawei());
         assert_eq!(app.rows(), [Row::Preset, Row::Start, Row::End, Row::Profile, Row::Fnlock]);
         assert!(text.contains("fn-lock") && !text.contains("keyboard"));
+    }
+
+    #[test]
+    fn fingerprint_panel_only_with_a_reader() {
+        let (_, text) = render(&machines::huawei());
+        assert!(!text.contains("fingerprint"));
+        let mut files = machines::huawei();
+        files.push(("sys/bus/acpi/devices/GXFP5130:00/physical_node/driver/x", ""));
+        files.push(("etc/pam.d/sudo", "auth sufficient pam_fprintd.so\n"));
+        let (mut app, _) = render(&files);
+        let pam = app.huella.take().unwrap().1;
+        app.huella = Some((Enrolled { device: None, fingers: vec!["right-index-finger".into(), "left-thumb".into()] }, pam));
+        let mut terminal = Terminal::new(TestBackend::new(110, 22)).unwrap();
+        terminal.draw(|f| ui::draw(f, &app)).unwrap();
+        let buf = terminal.backend().buffer();
+        let text: String = (0..buf.area.height).flat_map(|y| (0..buf.area.width).map(move |x| (x, y))).map(|p| buf[p].symbol()).collect();
+        assert!(text.contains("fingerprint") && text.contains("index thumb←") && text.contains("sudo ✓"));
     }
 
     /// Renders the live dashboard as text: `cargo test preview -- --ignored --nocapture`
