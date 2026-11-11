@@ -7,6 +7,7 @@ use crate::hw::charge::{self, Control, Kind, Preset, Thresholds};
 use crate::hw::kbd::{self, Kbd};
 use crate::hw::profile::{self, ProfileState};
 use crate::hw::thermal::Thermals;
+use crate::hw::fingerprint::{self, Reader};
 use crate::hw::{fnlock, led, Machine, Sysfs};
 
 #[derive(Debug, Clone, Serialize)]
@@ -23,6 +24,7 @@ pub struct Status {
     pub kbd: Option<Kbd>,
     pub micmute_led: Option<bool>,
     pub cpu_celsius: Option<f64>,
+    pub fingerprint: Option<Reader>,
     /// Plugged in but not charging because the charge limit was reached.
     pub held: bool,
     pub thermals: Thermals,
@@ -54,6 +56,7 @@ impl Status {
             kbd: kbd::read(fs).ok(),
             micmute_led: led::micmute(fs).ok(),
             cpu_celsius: thermals.cpu(),
+            fingerprint: fingerprint::detect(fs),
             held,
             thermals,
         }

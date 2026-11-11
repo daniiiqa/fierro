@@ -90,6 +90,8 @@ pub fn report(fs: &Sysfs) -> Value {
             "profile": status.profile.as_ref().map(|p| p.driver),
             "fnlock": status.fnlock_driver,
             "kbd": status.kbd.as_ref().map(|k| k.name.clone()),
+            "fingerprint": status.fingerprint,
+            "pam_fprintd": crate::hw::fingerprint::pam(fs),
         },
     })
 }

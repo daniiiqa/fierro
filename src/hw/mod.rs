@@ -2,6 +2,7 @@
 
 pub mod battery;
 pub mod charge;
+pub mod fingerprint;
 pub mod fnlock;
 pub mod kbd;
 pub mod led;

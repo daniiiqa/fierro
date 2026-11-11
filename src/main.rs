@@ -10,6 +10,7 @@ use fierro::config::Config;
 use fierro::hw::battery::Battery;
 use fierro::hw::charge::{self, Preset, Thresholds};
 use fierro::hw::profile::{self, Profile, ProfileState};
+use fierro::hw::fingerprint::{self, EnrollStep};
 use fierro::hw::{fnlock, kbd, Error, Result, Sysfs};
 use fierro::report;
 use fierro::status::Status;
@@ -54,6 +55,24 @@ enum Cmd {
     Restore,
     /// What this laptop exposes, as JSON to paste into a bug report
     Report,
+    /// Fingerprint reader: status, enroll and delete fingers, and the logins that take one
+    #[command(alias = "fingerprint")]
+    Huella {
+        #[command(subcommand)]
+        action: Option<Huella>,
+    },
+}
+
+#[derive(Subcommand)]
+enum Huella {
+    /// Enroll a finger (fprintd picks one if none given); Spanish names work: indice, pulgar-izquierdo…
+    #[command(alias = "registrar")]
+    Enroll { finger: Option<String> },
+    /// Delete a finger, or every one when none is given
+    #[command(alias = "borrar")]
+    Delete { finger: Option<String> },
+    /// Finger for sudo, polkit and SDDM (runs sudo itself when needed)
+    Pam { state: Switch },
 }
 
 #[derive(Clone, Copy, ValueEnum)]
@@ -144,6 +163,7 @@ fn run(fs: &Sysfs, cmd: Cmd) -> Result<()> {
             }
         }
         Cmd::Report => println!("{}", serde_json::to_string_pretty(&report::report(fs)).expect("report serializes")),
+        Cmd::Huella { action } => huella(fs, action)?,
     }
     Ok(())
 }
@@ -176,6 +196,10 @@ fn print_status(s: &Status) {
     if let Some(k) = &s.kbd {
         println!("kbd      {}/{}", k.level, k.max);
     }
+    if let Some(r) = &s.fingerprint {
+        let driver = if r.missing_driver.is_some() { " · no driver (fierro huella)" } else { "" };
+        println!("finger   {}{driver}", r.name);
+    }
     let mut thermal = Vec::new();
     if let Some(c) = s.cpu_celsius {
         thermal.push(format!("cpu {c:.0}°C"));
@@ -204,4 +228,107 @@ fn describe_health(b: &Battery) -> String {
 
 fn describe_fnlock(on: bool) -> &'static str {
     if on { "on (F1–F12)" } else { "off (media keys)" }
+}
+
+fn user() -> String {
+    std::env::var("USER").unwrap_or_default()
+}
+
+fn is_root() -> bool {
+    std::fs::read_to_string("/proc/self/status")
+        .ok()
+        .and_then(|s| s.lines().find_map(|l| l.strip_prefix("Uid:").map(|u| u.split_whitespace().next() == Some("0"))))
+        .unwrap_or(false)
+}
+
+fn huella(fs: &Sysfs, action: Option<Huella>) -> Result<()> {
+    let es = Config::load().spanish();
+    let t = move |a: &'static str, b: &'static str| if es { a } else { b };
+    let finger = |f: Option<String>| f.map(|f| fingerprint::finger_name(&f)).transpose();
+    match action {
+        None => {
+            let reader = fingerprint::detect(fs);
+            let enrolled = fingerprint::enrolled(&user()).unwrap_or_default();
+            let name = enrolled.device.clone().or_else(|| reader.as_ref().map(|r| r.name.clone()));
+            let Some(name) = name else { return Err(Error::Unsupported("a fingerprint reader")) };
+            println!("{}  {name}", t("lector ", "reader "));
+            if let Some(url) = reader.as_ref().and_then(|r| r.missing_driver) {
+                println!("         {} {url}", t("le falta el driver del kernel:", "needs a kernel driver:"));
+            } else if enrolled.device.is_none() {
+                println!("         {}", t("fprintd no lo ve (¿falta fprintd o libfprint?)", "fprintd can't see it (fprintd or libfprint missing?)"));
+            }
+            let fingers = if enrolled.fingers.is_empty() {
+                t("ninguno — fierro huella registrar", "none — fierro huella enroll").to_string()
+            } else {
+                enrolled.fingers.join(", ")
+            };
+            println!("{}  {fingers}", t("dedos  ", "fingers"));
+            for s in fingerprint::pam(fs) {
+                let mark = if s.on { t("✓ huella", "✓ finger") } else { t("· contraseña", "· password") };
+                println!("{:<9}{mark}", s.name);
+            }
+        }
+        Some(Huella::Enroll { finger: f }) => {
+            let f = finger(f)?;
+            println!("{}", t("Toca el lector; levanta el dedo y muévelo un poco entre toques.", "Touch the reader; lift and shift your finger a little between touches."));
+            let mut n = 0;
+            let res = fingerprint::enroll(f.as_deref(), |step| match step {
+                EnrollStep::Passed => {
+                    n += 1;
+                    println!("  ✓ {n}");
+                }
+                EnrollStep::Retry(why) => {
+                    let hint = if why.contains("centered") {
+                        t("céntralo", "center it")
+                    } else if why.contains("remove") {
+                        t("quítalo y vuelve a ponerlo", "lift it and touch again")
+                    } else {
+                        t("otra vez", "again")
+                    };
+                    println!("  · {hint}");
+                }
+                EnrollStep::Done => println!("{}", t("Listo, registrado.", "Done, enrolled.")),
+                EnrollStep::Failed(_) => {}
+            });
+            if let Err(e) = res {
+                if fingerprint::detect(fs).is_some_and(|r| r.bus == "espi") {
+                    eprintln!("{}", t(
+                        "Si se tardó y falló: sudo systemctl stop fprintd; sudo modprobe -r gxfp; sudo modprobe gxfp — y otra vez.",
+                        "If it timed out: sudo systemctl stop fprintd; sudo modprobe -r gxfp; sudo modprobe gxfp — then retry.",
+                    ));
+                }
+                return Err(e);
+            }
+        }
+        Some(Huella::Delete { finger: f }) => {
+            let f = finger(f)?;
+            fingerprint::delete(&user(), f.as_deref())?;
+            println!("{}", t("Borrado.", "Deleted."));
+        }
+        Some(Huella::Pam { state }) => {
+            let on = match state {
+                Switch::On => true,
+                Switch::Off => false,
+                Switch::Toggle => !fingerprint::pam(fs).iter().any(|s| s.on),
+            };
+            if is_root() {
+                for name in fingerprint::set_pam(fs, on)? {
+                    println!("{name}");
+                }
+            } else {
+                let exe = std::env::current_exe().map_err(|source| Error::Io { path: "fierro".into(), source })?;
+                let ok = std::process::Command::new("sudo")
+                    .arg(exe)
+                    .args(["huella", "pam", if on { "on" } else { "off" }])
+                    .stdout(std::process::Stdio::null())
+                    .status()
+                    .is_ok_and(|s| s.success());
+                if !ok {
+                    return Err(Error::Invalid(t("no se pudo con sudo", "sudo failed").into()));
+                }
+                return huella(fs, None);
+            }
+        }
+    }
+    Ok(())
 }

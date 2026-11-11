@@ -29,6 +29,7 @@ temperatures — only the panels your laptop actually has.
 | **Battery health** | wear %, cycles, live power draw, time left |
 | **Thermals** | every hwmon sensor and fan |
 | **Restore** | `fierro restore` reapplies your last limits and profile at login |
+| **Fingerprint** | `fierro huella`: the reader, enrolled fingers, enroll/delete (Spanish finger names too), and `pam on|off` for sudo, polkit and SDDM. Spots readers with no stock driver (Goodix GXFP5130 on MateBooks) and says where to get one |
 
 ## Hardware
 
@@ -78,11 +79,17 @@ fierro health
 fierro bar                 waybar custom-module JSON (see dist/waybar-module.jsonc)
 fierro restore
 fierro report              what this laptop exposes, for bug reports
+fierro huella [enroll|delete [FINGER]] [pam on|off]
 ```
 
 `charge` and `profile` remember what you set in `~/.config/fierro/config.json`;
 `--temp` applies a profile without remembering it (for battery-saver scripts).
 Set `"lang": "es"` there for the dashboard in Spanish.
+
+`huella pam on` asks for the finger first in sudo and polkit (password after 10 s),
+and in SDDM takes the password as always or a finger on Enter with an empty field.
+Every line it adds ends in `# fierro huella`; `pam off` removes exactly those, and
+the first change keeps a `*.fierro-orig` copy next to each file.
 
 ## Look
 
