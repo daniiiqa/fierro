@@ -60,6 +60,11 @@ impl Sysfs {
         Self { root: root.into() }
     }
 
+    /// Where the tree starts: `/` on the real machine.
+    pub fn root(&self) -> &std::path::Path {
+        &self.root
+    }
+
     pub fn path(&self, rel: &str) -> PathBuf {
         self.root.join(rel.trim_start_matches('/'))
     }

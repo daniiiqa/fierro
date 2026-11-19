@@ -126,7 +126,46 @@ pub fn read(fs: &Sysfs) -> Result<ProfileState> {
     Ok(ProfileState { profile, driver, platform, governor, epp, turbo })
 }
 
+/// power-profiles-daemon's name for a profile.
+fn ppd_name(profile: Profile) -> &'static str {
+    match profile {
+        Profile::Ahorro => "power-saver",
+        Profile::Balance => "balanced",
+        Profile::Fierro => "performance",
+    }
+}
+
+/// When power-profiles-daemon is running (a laptop that also has KDE or GNOME,
+/// whose battery menus talk to it), profiles go through it instead of sysfs:
+/// both sides then see and change the same profile, and it doesn't undo ours.
+/// Only on the real machine, never on a fake tree.
+fn via_ppd(fs: &Sysfs, profile: Profile) -> Option<Result<()>> {
+    if fs.root() != std::path::Path::new("/") {
+        return None;
+    }
+    let active = std::process::Command::new("systemctl")
+        .args(["is-active", "--quiet", "power-profiles-daemon.service"])
+        .status()
+        .is_ok_and(|s| s.success());
+    if !active {
+        return None;
+    }
+    let out = std::process::Command::new("powerprofilesctl").args(["set", ppd_name(profile)]).output();
+    Some(match out {
+        Ok(o) if o.status.success() => Ok(()),
+        Ok(o) => Err(Error::Invalid(format!(
+            "power-profiles-daemon: {}",
+            String::from_utf8_lossy(&o.stderr).trim()
+        ))),
+        // daemon running but no powerprofilesctl: fall back to sysfs
+        Err(_) => return None,
+    })
+}
+
 pub fn apply(fs: &Sysfs, profile: Profile) -> Result<()> {
+    if let Some(r) = via_ppd(fs, profile) {
+        return r;
+    }
     let policies = policies(fs);
     if !fs.exists(PLATFORM) && policies.is_empty() {
         return Err(Error::Unsupported("power profiles"));

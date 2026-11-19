@@ -56,8 +56,11 @@ cargo install --path . --root ~/.local
 sudo ./dist/install.sh          # once: fierro group + permissions, so fierro never needs root
 ```
 
-Log out and back in after `install.sh`. It also masks `power-profiles-daemon`,
-which would otherwise fight fierro over the CPU settings.
+Log out and back in after `install.sh`. If Hyprland is the only desktop it also
+masks `power-profiles-daemon`, which would otherwise fight fierro over the CPU
+settings. With another desktop installed (KDE, GNOME…) it leaves the daemon on,
+since their battery menus need it, and fierro sets profiles through it
+(`powerprofilesctl`), so both desktops share one profile.
 
 To reapply settings at login without a compositor hook:
 

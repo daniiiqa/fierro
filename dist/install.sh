@@ -25,9 +25,25 @@ install -Dm644 "$DIST/fierro-perms.service" /etc/systemd/system/fierro-perms.ser
 systemctl daemon-reload
 systemctl enable --now fierro-perms
 
+# power-profiles-daemon: with another desktop on this machine (KDE, GNOME…) its
+# battery menu needs it, so it stays on and fierro sets profiles through it
+# (unmasked again if an older fierro masked it). With only Hyprland it would
+# just fight fierro's profiles, so it's masked.
+other_desktop() {
+    for f in /usr/share/wayland-sessions/*.desktop /usr/share/xsessions/*.desktop; do
+        [ -e "$f" ] || continue
+        case "$(basename "$f")" in hyprland*) ;; *) return 0 ;; esac
+    done
+    return 1
+}
 if systemctl list-unit-files power-profiles-daemon.service >/dev/null 2>&1; then
-    systemctl disable --now power-profiles-daemon || true
-    systemctl mask power-profiles-daemon
+    if other_desktop; then
+        systemctl unmask power-profiles-daemon 2>/dev/null || true
+        systemctl enable --now power-profiles-daemon || true
+    else
+        systemctl disable --now power-profiles-daemon || true
+        systemctl mask power-profiles-daemon
+    fi
 fi
 
 echo "done: log out and back in so $USER_NAME picks up the fierro group"
